@@ -44,5 +44,12 @@ export const course = {
     { ax: -5.7, az: 1.7, bx: -5.7, bz: 8.2 },
     // green perimeter with south-facing entrance gap
     ...arcWalls(GREEN.x, GREEN.z, GREEN.r, 270, 24),
+    // canal banks + bridge rails (invisible — the ball can never fall in)
+    { ax: -31, az: 8.2, bx: -4.9, bz: 8.2, hidden: true },
+    { ax: -3.1, az: 8.2, bx: 21, bz: 8.2, hidden: true },
+    { ax: -31, az: 11.8, bx: -4.9, bz: 11.8, hidden: true },
+    { ax: -3.1, az: 11.8, bx: 21, bz: 11.8, hidden: true },
+    { ax: -4.9, az: 8.2, bx: -4.9, bz: 11.8, hidden: true },
+    { ax: -3.1, az: 8.2, bx: -3.1, bz: 11.8, hidden: true },
   ],
 };

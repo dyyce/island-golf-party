@@ -113,10 +113,11 @@ export function buildCourse(scene) {
   tee.position.set(course.tee.x, GROUND_Y + 0.005, course.tee.z);
   scene.add(tee);
 
-  // walls (striped boxes along segments)
+  // walls (striped boxes along segments; hidden ones are physics-only)
   const wallTex = stripedTexture();
   const wallMat = new THREE.MeshPhongMaterial({ map: wallTex, shininess: 20 });
   for (const w of course.walls) {
+    if (w.hidden) continue;
     const len = Math.hypot(w.bx - w.ax, w.bz - w.az);
     const g = new THREE.BoxGeometry(len + 0.3, 0.5, 0.56);
     const m = new THREE.Mesh(g, wallMat.clone());

@@ -104,7 +104,9 @@ function tickRoom(room, dt) {
   if (room.status !== 'playing') return;
   const events = { bounce: false, bumper: false, splash: null, holed: null };
   const balls = room.players.map(p => p.ball);
-  step(room.course, balls, dt, events);
+  // substeps so fast balls can't tunnel through thin walls
+  const SUBSTEPS = 4;
+  for (let i = 0; i < SUBSTEPS; i++) step(room.course, balls, dt / SUBSTEPS, events);
 
   const out = [];
   if (events.bounce) out.push({ e: 'bounce' });
