@@ -320,7 +320,7 @@ canvas.addEventListener('pointermove', e => {
   const p = myBall();
   const dx = p.target.x - g.x, dz = p.target.z - g.z;
   const dist = Math.hypot(dx, dz);
-  aimPower = Math.min(1, dist / 7);
+  aimPower = Math.min(1, dist / 3.5); // full power within one comfortable drag
   if (dist > 1e-4) aimDir.set(dx / dist, 0, dz / dist);
   updateAimVisual();
 });

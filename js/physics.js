@@ -13,7 +13,7 @@ const FRICTION_SAND = 5.0;
 const FRICTION_GREEN = 0.7;
 const STOP_SPEED = 0.15;
 const CUP_CAPTURE_SPEED = 4.2;
-export const MAX_SPEED = 16;
+export const MAX_SPEED = 24; // ~50% more than the initial 16
 
 export function clampSpeed(vel) {
   const s = Math.hypot(vel.x, vel.z);
