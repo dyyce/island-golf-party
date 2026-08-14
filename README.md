@@ -1,18 +1,27 @@
 # ⛳ Island Golf Party
 
-Couch-multiplayer (hotseat) minigolf PoC — Mario-Party-style, one island hole.
+Online realtime multiplayer minigolf PoC — Mario-Party-style, one island hole.
 
-- 1–4 players, quick-pick avatars (name, color, hat) — optional, defaults provided
+- Rooms with 4-letter join codes, 1–4 players, host starts the round
+- Authoritative Node server: physics, turns, and scores run server-side at
+  ~30 Hz; clients render snapshots (WebSocket, `ws`)
 - One island course: bumpers → dogleg with sand trap → rail-less bridge over a
   water canal (penalty +1) → rotating spinner gate → green
 - Slingshot controls: drag back from the ball, release to shoot
-- Custom 2D physics (XZ plane) + Three.js rendering, no build step
+- Camera: Q/E or arrow keys, right-drag, or on-screen buttons
+- Custom 2D physics (XZ plane, shared `js/physics.js` + `js/course-data.js` on
+  client and server) + Three.js rendering
 
 ## Run locally
 
-Any static server, e.g. `python3 -m http.server` in this folder, then open
-`http://localhost:8000`. Three.js is loaded from CDN via import map.
+```bash
+npm install
+npm start   # serves http://localhost:3000
+```
+
+Open the URL in two browser windows (or share your LAN URL) to play.
 
 ## Deploy
 
-Static site — serve the repo root as-is (Dokploy `static` type).
+Node app (`server.js` serves static files + WebSocket). On Dokploy use the
+`nixpacks` type; listens on `PORT` (default 3000).

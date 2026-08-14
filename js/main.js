@@ -1,17 +1,13 @@
-// Island Golf Party — hotseat couch-multiplayer minigolf (PoC).
-// One island hole: bumpers → dogleg sand trap → rail-less bridge over the
-// canal → spinner gate → green. Drag back from the ball to aim, release to shoot.
+// Island Golf Party client — online multiplayer.
+// The server is authoritative: it owns physics, turns and scores. This client
+// renders server snapshots, sends aim/shoot input, and runs the lobby.
 
 import * as THREE from 'three';
 import { course, buildCourse, GROUND_Y } from './course.js';
-import { BALL_R, MAX_SPEED, step, allRested, clampSpeed } from './physics.js';
-import { makeAvatar, animateAvatar, HATS } from './avatar.js';
+import { BALL_R, MAX_SPEED } from './physics.js';
 import { sfx } from './audio.js';
 
-const PLAYER_COLORS = [0xe64545, 0x3f7fff, 0x2e9e44, 0xb44fe6];
 const COLOR_HEX = ['#e64545', '#3f7fff', '#2e9e44', '#b44fe6', '#ff8f3f', '#e6cf4f'];
-const MAX_STROKES = 12;
-const MAX_PLAYERS = 4;
 
 // ---------- three.js setup ----------
 const canvas = document.getElementById('game-canvas');
@@ -34,16 +30,19 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
-// ---------- game state ----------
-let state = 'menu'; // menu | playing | over
-let players = [];   // {name, color, hat, strokes, holed, ball:{pos,vel,restPos,holed,inWater}, mesh, avatar}
-let current = 0;
+// ---------- client state ----------
+let me = { id: null, name: '', color: parseInt(COLOR_HEX[0].slice(1), 16) };
+let hostId = null;
+let roomPlayers = []; // lobby roster
+let status = 'menu';  // menu | lobby | playing | over
+let players = new Map(); // id -> {id,name,color,strokes,holed, mesh, target:{x,z}, inWater, sinking}
+let currentId = null;
+let rested = true;
 let aiming = false;
-let aimStart = null; // pointer ground pos when drag started
 let aimDir = new THREE.Vector3();
 let aimPower = 0;
-let respawnQueue = []; // {player, t}
 let confetti = [];
+let lastBounceSfx = -1;
 
 // aim visuals
 const aimGroup = new THREE.Group();
@@ -68,175 +67,206 @@ const marker = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0xffcf3f })
 );
 marker.rotation.x = Math.PI;
+marker.visible = false;
 scene.add(marker);
 
 // ---------- DOM ----------
 const $ = id => document.getElementById(id);
 const setupScreen = $('setup-screen'), hud = $('hud'), endScreen = $('end-screen');
-const playerListEl = $('player-list'), chipsEl = $('score-chips'), bannerEl = $('turn-banner');
+const lobbyEntry = $('lobby-entry'), lobbyRoom = $('lobby-room');
+const chipsEl = $('score-chips'), bannerEl = $('turn-banner');
 const powerWrap = $('power-wrap'), powerBar = $('power-bar');
 
-// ---------- setup screen ----------
-let roster = [
-  { name: 'Player 1', color: PLAYER_COLORS[0], hat: 'cap' },
-  { name: 'Player 2', color: PLAYER_COLORS[1], hat: 'cone' },
-];
-let editingIdx = null;
-
-function renderRoster() {
-  playerListEl.innerHTML = '';
-  roster.forEach((p, i) => {
-    const row = document.createElement('div');
-    row.className = 'player-row';
-    row.innerHTML = `
-      <span class="dot" style="background:#${p.color.toString(16).padStart(6, '0')}"></span>
-      <span class="pname">${p.name}</span>
-      <span class="pdesc">${HATS.find(h => h.id === p.hat)?.label ?? ''}</span>
-      <button data-edit="${i}" title="Customize">✏️</button>
-      ${roster.length > 1 ? `<button data-del="${i}" title="Remove">✖</button>` : ''}`;
-    playerListEl.appendChild(row);
-  });
-  $('add-player-btn').disabled = roster.length >= MAX_PLAYERS;
-}
-
-playerListEl.addEventListener('click', e => {
-  const edit = e.target.dataset.edit, del = e.target.dataset.del;
-  if (edit !== undefined) openEditor(+edit);
-  if (del !== undefined) { roster.splice(+del, 1); renderRoster(); }
-});
-
-$('add-player-btn').addEventListener('click', () => {
-  if (roster.length >= MAX_PLAYERS) return;
-  const i = roster.length;
-  roster.push({ name: `Player ${i + 1}`, color: PLAYER_COLORS[i % PLAYER_COLORS.length], hat: HATS[i % HATS.length].id });
-  renderRoster();
-});
-
-// avatar editor popover
-const editorEl = $('avatar-editor');
-function openEditor(i) {
-  editingIdx = i;
-  const p = roster[i];
-  editorEl.classList.remove('hidden');
-  $('ae-name').value = p.name;
-  const colorsEl = $('ae-colors');
-  colorsEl.innerHTML = '';
+// color swatches
+{
+  const wrap = $('me-colors');
   for (const c of COLOR_HEX) {
     const b = document.createElement('div');
-    b.className = 'swatch' + (p.color === parseInt(c.slice(1), 16) ? ' selected' : '');
+    b.className = 'swatch' + (me.color === parseInt(c.slice(1), 16) ? ' selected' : '');
     b.style.background = c;
-    b.addEventListener('click', () => { p.color = parseInt(c.slice(1), 16); openEditor(i); });
-    colorsEl.appendChild(b);
-  }
-  const hatsEl = $('ae-hats');
-  hatsEl.innerHTML = '';
-  for (const h of HATS) {
-    const b = document.createElement('div');
-    b.className = 'swatch' + (p.hat === h.id ? ' selected' : '');
-    b.textContent = h.label;
-    b.addEventListener('click', () => { p.hat = h.id; openEditor(i); });
-    hatsEl.appendChild(b);
+    b.addEventListener('click', () => {
+      me.color = parseInt(c.slice(1), 16);
+      wrap.querySelectorAll('.swatch').forEach(s => s.classList.remove('selected'));
+      b.classList.add('selected');
+    });
+    wrap.appendChild(b);
   }
 }
-$('ae-done').addEventListener('click', () => {
-  if (editingIdx !== null) {
-    const v = $('ae-name').value.trim();
-    if (v) roster[editingIdx].name = v;
+
+// ---------- networking ----------
+let ws = null;
+
+function connect(action) {
+  const name = $('me-name').value.trim() || 'Player';
+  me.name = name;
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}`);
+  ws.onopen = () => {
+    if (action.type === 'create') ws.send(JSON.stringify({ t: 'create', name, color: me.color }));
+    else ws.send(JSON.stringify({ t: 'join', code: action.code, name, color: me.color }));
+  };
+  ws.onmessage = e => handleMsg(JSON.parse(e.data));
+  ws.onerror = () => { $('lobby-error').textContent = 'Connection failed.'; };
+  ws.onclose = () => {
+    if (status === 'playing' || status === 'over' || status === 'lobby') {
+      bannerEl.textContent = 'Disconnected — reload to rejoin';
+    }
+  };
+}
+
+function handleMsg(msg) {
+  switch (msg.t) {
+    case 'me':
+      me.id = msg.id;
+      break;
+    case 'error':
+      $('lobby-error').textContent = msg.error;
+      break;
+    case 'lobby': {
+      hostId = msg.hostId;
+      roomPlayers = msg.players;
+      status = 'lobby';
+      lobbyEntry.classList.add('hidden');
+      lobbyRoom.classList.remove('hidden');
+      $('room-code').textContent = msg.code;
+      const list = $('player-list');
+      list.innerHTML = '';
+      for (const p of msg.players) {
+        const row = document.createElement('div');
+        row.className = 'player-row';
+        row.innerHTML = `<span class="dot" style="background:#${p.color.toString(16).padStart(6, '0')}"></span>
+          <span class="pname">${p.name}${p.id === me.id ? ' (you)' : ''}</span>
+          ${p.id === hostId ? '<span class="pdesc">host 👑</span>' : ''}`;
+        list.appendChild(row);
+      }
+      $('start-btn').classList.toggle('hidden', me.id !== hostId);
+      $('waiting-host').classList.toggle('hidden', me.id === hostId);
+      break;
+    }
+    case 'started':
+      beginRound(msg.players);
+      break;
+    case 'state':
+      applyState(msg);
+      break;
+    case 'events':
+      for (const ev of msg.events) handleEvent(ev);
+      break;
+    case 'over':
+      showEnd(msg.players);
+      break;
   }
-  editingIdx = null;
-  editorEl.classList.add('hidden');
-  renderRoster();
-});
+}
 
 // ---------- round lifecycle ----------
-function startRound() {
-  // clear previous round objects
-  for (const p of players) { scene.remove(p.mesh); scene.remove(p.avatar); }
-  players = roster.map((r, i) => {
+function beginRound(playerInfos) {
+  for (const p of players.values()) scene.remove(p.mesh);
+  players = new Map();
+  for (const info of playerInfos) {
     const mesh = new THREE.Mesh(
       new THREE.SphereGeometry(BALL_R, 20, 14),
-      new THREE.MeshPhongMaterial({ color: r.color, shininess: 90, specular: 0x666666 })
+      new THREE.MeshPhongMaterial({ color: info.color, shininess: 90, specular: 0x666666 })
     );
     mesh.castShadow = true;
+    mesh.position.set(course.tee.x, GROUND_Y + BALL_R, course.tee.z);
     scene.add(mesh);
-    const avatar = makeAvatar(r.color, r.hat);
-    scene.add(avatar);
-    return {
-      ...r,
-      strokes: 0, holed: false,
-      ball: {
-        pos: { x: course.tee.x - 0.0, z: course.tee.z + (i - (roster.length - 1) / 2) * 0.55 },
-        vel: { x: 0, z: 0 },
-        restPos: null, holed: false, inWater: false,
-        sinkT: 0,
-      },
-      mesh, avatar,
-    };
-  });
-  for (const p of players) p.ball.restPos = { ...p.ball.pos };
-  current = 0;
+    players.set(info.id, { ...info, mesh, target: { x: course.tee.x, z: course.tee.z }, inWater: false, sinking: 0 });
+  }
+  status = 'playing';
   aiming = false;
-  aimPower = 0;
   aimGroup.visible = false;
   powerWrap.classList.add('hidden');
-  respawnQueue = [];
-  pendingTurnAdvance = false;
-  wasMoving = false;
-  state = 'playing';
   setupScreen.classList.add('hidden');
   endScreen.classList.add('hidden');
   hud.classList.remove('hidden');
-  updateHUD();
   sfx.whistle();
 }
 
-function endRound() {
-  state = 'over';
+function applyState(msg) {
+  currentId = msg.current;
+  rested = msg.rested;
+  dynamic.spinnerBar.rotation.y = -msg.spinner;
+  for (const ps of msg.players) {
+    const p = players.get(ps.id);
+    if (!p) continue;
+    p.strokes = ps.strokes;
+    p.holed = ps.holed;
+    p.target.x = ps.x; p.target.z = ps.z;
+    if (ps.inWater !== p.inWater) {
+      p.inWater = ps.inWater;
+      if (ps.inWater) p.mesh.visible = false;
+      else if (!p.holed && !p.sinking) p.mesh.visible = true;
+    }
+  }
+  updateHUD();
+}
+
+function handleEvent(ev) {
+  const t = clock.elapsedTime;
+  switch (ev.e) {
+    case 'bounce':
+      if (t - lastBounceSfx > 0.12) { sfx.bounce(); lastBounceSfx = t; }
+      break;
+    case 'bumper':
+      sfx.bumper();
+      break;
+    case 'splash': {
+      const p = players.get(ev.id);
+      sfx.splash();
+      if (p) spawnConfetti(p.target.x, GROUND_Y + 0.2, p.target.z, 0x2a8fbd, 40);
+      break;
+    }
+    case 'respawn': {
+      const p = players.get(ev.id);
+      if (p && !p.holed) p.mesh.visible = true;
+      break;
+    }
+    case 'hole': {
+      const p = players.get(ev.id);
+      if (p && !p.sinking) {
+        p.sinking = 0.0001;
+        sfx.hole();
+        spawnConfetti(course.cup.x, GROUND_Y + 0.3, course.cup.z, p.color);
+      }
+      break;
+    }
+  }
+}
+
+function showEnd(playerInfos) {
+  status = 'over';
   hud.classList.add('hidden');
   endScreen.classList.remove('hidden');
-  const sorted = [...players].sort((a, b) => a.strokes - b.strokes);
-  const best = sorted[0].strokes;
+  const sorted = [...playerInfos].sort((a, b) => a.strokes - b.strokes);
+  const best = sorted[0]?.strokes ?? 0;
   const winners = sorted.filter(p => p.strokes === best);
   $('winner-title').textContent = winners.length > 1 ? "🤝 It's a tie!" : `🎉 ${winners[0].name} wins!`;
   $('scorecard').innerHTML =
     '<tr><th>Player</th><th>Strokes</th></tr>' +
-    sorted.map(p => `<tr><td>${p.name}</td><td>${p.strokes}${p.holed ? '' : ' (max)'}</td></tr>`).join('');
+    sorted.map(p => `<tr><td>${p.name}${p.id === me.id ? ' (you)' : ''}</td><td>${p.strokes}${p.holed ? '' : ' (max)'}</td></tr>`).join('');
+  $('play-again-btn').classList.toggle('hidden', me.id !== hostId);
+  $('end-waiting').classList.toggle('hidden', me.id === hostId);
 }
 
+let lastHud = '';
 function updateHUD() {
+  if (status !== 'playing') return;
+  const parts = [];
+  for (const p of players.values()) {
+    parts.push(`${p.id}:${p.strokes}:${p.holed}:${p.id === currentId}`);
+  }
+  const key = parts.join('|') + '#' + currentId;
+  if (key === lastHud) return;
+  lastHud = key;
   chipsEl.innerHTML = '';
-  players.forEach((p, i) => {
+  for (const p of players.values()) {
     const chip = document.createElement('div');
-    chip.className = 'chip' + (i === current && state === 'playing' ? ' current' : '') + (p.holed ? ' holed' : '');
+    chip.className = 'chip' + (p.id === currentId ? ' current' : '') + (p.holed ? ' holed' : '');
     chip.innerHTML = `<span class="dot" style="background:#${p.color.toString(16).padStart(6, '0')}"></span>${p.name} · ${p.strokes}`;
     chipsEl.appendChild(chip);
-  });
-  if (state === 'playing' && players[current]) {
-    bannerEl.textContent = `${players[current].name}'s turn`;
   }
-}
-
-function nextTurn() {
-  if (players.every(p => p.holed)) { endRound(); return; }
-  do { current = (current + 1) % players.length; } while (players[current].holed);
-  updateHUD();
-  sfx.turn();
-}
-
-function holeOut(p) {
-  p.holed = true;
-  p.ball.sinkT = 0.0001;
-  sfx.hole();
-  spawnConfetti(course.cup.x, GROUND_Y + 0.3, course.cup.z, p.color);
-}
-
-function splash(p) {
-  p.strokes += 1; // penalty
-  sfx.splash();
-  spawnConfetti(p.ball.pos.x, GROUND_Y + 0.2, p.ball.pos.z, 0x2a8fbd, 40);
-  p.mesh.visible = false;
-  respawnQueue.push({ p, t: 0.9 });
-  updateHUD();
+  const cur = players.get(currentId);
+  bannerEl.textContent = cur ? (cur.id === me.id ? "Your turn — shoot!" : `${cur.name}'s turn`) : '';
 }
 
 // ---------- confetti ----------
@@ -266,10 +296,11 @@ function pointerGround(e) {
   return raycaster.ray.intersectPlane(groundPlane, out) ? out : null;
 }
 
-function currentBall() { return players[current]?.ball; }
+function myBall() { return players.get(me.id); }
 function canShoot() {
-  return state === 'playing' && currentBall() && !currentBall().holed &&
-    !currentBall().inWater && allRested(players.map(p => p.ball)) && respawnQueue.length === 0;
+  const p = myBall();
+  return status === 'playing' && p && currentId === me.id && rested &&
+    !p.holed && !p.inWater && !p.sinking;
 }
 
 canvas.addEventListener('pointerdown', e => {
@@ -278,7 +309,6 @@ canvas.addEventListener('pointerdown', e => {
   const g = pointerGround(e);
   if (!g) return;
   aiming = true;
-  aimStart = g;
   canvas.setPointerCapture(e.pointerId);
 });
 
@@ -287,9 +317,8 @@ canvas.addEventListener('pointermove', e => {
   if (!aiming) return;
   const g = pointerGround(e);
   if (!g) return;
-  const b = currentBall();
-  // slingshot: drag away from target, shoot opposite
-  const dx = b.pos.x - g.x, dz = b.pos.z - g.z;
+  const p = myBall();
+  const dx = p.target.x - g.x, dz = p.target.z - g.z;
   const dist = Math.hypot(dx, dz);
   aimPower = Math.min(1, dist / 7);
   if (dist > 1e-4) aimDir.set(dx / dist, 0, dz / dist);
@@ -303,35 +332,15 @@ canvas.addEventListener('pointerup', e => {
   aimGroup.visible = false;
   powerWrap.classList.add('hidden');
   if (aimPower > 0.06 && canShoot()) {
-    const b = currentBall();
-    b.vel.x = aimDir.x * aimPower * MAX_SPEED;
-    b.vel.z = aimDir.z * aimPower * MAX_SPEED;
-    clampSpeed(b.vel);
-    players[current].strokes += 1;
+    ws.send(JSON.stringify({
+      t: 'shoot',
+      x: aimDir.x * aimPower * MAX_SPEED,
+      z: aimDir.z * aimPower * MAX_SPEED,
+    }));
     sfx.hit(aimPower);
-    updateHUD();
   }
   aimPower = 0;
 });
-
-function updateAimVisual() {
-  const b = currentBall();
-  aimGroup.visible = aimPower > 0.02;
-  powerWrap.classList.toggle('hidden', aimPower <= 0.02);
-  powerBar.style.width = `${aimPower * 100}%`;
-  if (!aimGroup.visible) return;
-  aimGroup.position.set(b.pos.x, GROUND_Y + BALL_R, b.pos.z);
-  // children extend along local -z; map that onto the aim direction
-  aimGroup.rotation.y = Math.atan2(-aimDir.x, -aimDir.z);
-  // cone at the tip
-  const reach = 1 + aimPower * 6;
-  aimArrow.position.set(0, 0, -(reach + 0.5));
-  // dotted line
-  aimDots.forEach((d, i) => {
-    d.position.set(0, 0, -0.8 - i * (reach / aimDots.length));
-    d.material.opacity = 0.9 - i * 0.07;
-  });
-}
 
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 addEventListener('keydown', e => {
@@ -340,23 +349,38 @@ addEventListener('keydown', e => {
 });
 addEventListener('keyup', e => keysDown.delete(e.code));
 
+function updateAimVisual() {
+  const p = myBall();
+  aimGroup.visible = aimPower > 0.02;
+  powerWrap.classList.toggle('hidden', aimPower <= 0.02);
+  powerBar.style.width = `${aimPower * 100}%`;
+  if (!aimGroup.visible) return;
+  aimGroup.position.set(p.target.x, GROUND_Y + BALL_R, p.target.z);
+  // children extend along local -z; map that onto the aim direction
+  aimGroup.rotation.y = Math.atan2(-aimDir.x, -aimDir.z);
+  const reach = 1 + aimPower * 6;
+  aimArrow.position.set(0, 0, -(reach + 0.5));
+  aimDots.forEach((d, i) => {
+    d.position.set(0, 0, -0.8 - i * (reach / aimDots.length));
+    d.material.opacity = 0.9 - i * 0.07;
+  });
+}
+
 // ---------- buttons ----------
-$('quick-start-btn').addEventListener('click', startRound);
-$('restart-btn').addEventListener('click', startRound);
-$('play-again-btn').addEventListener('click', startRound);
+$('create-room-btn').addEventListener('click', () => connect({ type: 'create' }));
+$('join-room-btn').addEventListener('click', () => {
+  const code = $('join-code').value.trim().toUpperCase();
+  if (code.length !== 4) { $('lobby-error').textContent = 'Enter the 4-letter room code.'; return; }
+  connect({ type: 'join', code });
+});
+$('start-btn').addEventListener('click', () => ws.send(JSON.stringify({ t: 'start' })));
+$('play-again-btn').addEventListener('click', () => ws.send(JSON.stringify({ t: 'start' })));
 $('cam-left-btn').addEventListener('click', () => { targetYaw += Math.PI / 4; });
 $('cam-right-btn').addEventListener('click', () => { targetYaw -= Math.PI / 4; });
-$('menu-btn').addEventListener('click', () => { state = 'menu'; hud.classList.add('hidden'); setupScreen.classList.remove('hidden'); });
-$('end-menu-btn').addEventListener('click', () => { state = 'menu'; endScreen.classList.add('hidden'); setupScreen.classList.remove('hidden'); });
-
-renderRoster();
 
 // ---------- animation ----------
 const clock = new THREE.Clock();
 const camTarget = new THREE.Vector3(course.tee.x, 0, course.tee.z);
-let wasMoving = false;
-let pendingTurnAdvance = false;
-let lastBounceSfx = -1;
 let camYaw = 0, targetYaw = 0;
 let orbiting = false;
 const keysDown = new Set();
@@ -366,73 +390,38 @@ function animate() {
   const dt = Math.min(clock.getDelta(), 0.05);
   const t = clock.elapsedTime;
 
-  // physics in fixed-ish substeps
-  if (state === 'playing' || state === 'over') {
-    const events = { bounce: false, bumper: false, splash: null, holed: null };
-    const n = 4;
-    for (let i = 0; i < n; i++) step(course, players.map(p => p.ball), dt / n, events);
-    if (events.bounce && t - lastBounceSfx > 0.12) { sfx.bounce(); lastBounceSfx = t; }
-    if (events.bumper) sfx.bumper();
-    if (events.splash) { const p = players.find(pl => pl.ball === events.splash); if (p) splash(p); }
-    if (events.holed) { const p = players.find(pl => pl.ball === events.holed); if (p && !p.holed) holeOut(p); }
+  // held-key camera rotation
+  if (keysDown.has('KeyQ') || keysDown.has('ArrowLeft')) targetYaw += dt * 1.8;
+  if (keysDown.has('KeyE') || keysDown.has('ArrowRight')) targetYaw -= dt * 1.8;
 
-    // respawn splashed balls
-    for (const r of respawnQueue) r.t -= dt;
-    for (const r of respawnQueue.filter(r => r.t <= 0)) {
-      r.p.ball.pos = { ...r.p.ball.restPos };
-      r.p.ball.inWater = false;
-      r.p.mesh.visible = true;
-    }
-    respawnQueue = respawnQueue.filter(r => r.t > 0);
-
-    // turn advance once everything rests (and pending respawns are done)
-    const moving = !allRested(players.map(p => p.ball));
-    if (state === 'playing') {
-      if (wasMoving && !moving) pendingTurnAdvance = true;
-      if (pendingTurnAdvance && !moving && respawnQueue.length === 0) {
-        pendingTurnAdvance = false;
-        for (const p of players) {
-          if (!p.ball.holed && !p.ball.inWater) p.ball.restPos = { ...p.ball.pos };
-          if (p.strokes >= MAX_STROKES && !p.holed) { p.holed = true; p.ball.holed = true; p.mesh.visible = false; }
-        }
-        nextTurn();
+  if (status === 'playing' || status === 'over') {
+    // interpolate balls toward server targets
+    const k = 1 - Math.pow(0.0001, dt);
+    for (const p of players.values()) {
+      if (p.sinking > 0) {
+        p.sinking += dt;
+        const s = Math.min(1, p.sinking / 0.4);
+        p.mesh.position.set(course.cup.x, GROUND_Y + BALL_R - s * 0.5, course.cup.z);
+        p.mesh.scale.setScalar(1 - s * 0.9);
+        if (s >= 1) { p.mesh.visible = false; p.sinking = -1; }
+      } else if (!p.inWater && !p.holed) {
+        p.mesh.position.x += (p.target.x - p.mesh.position.x) * k;
+        p.mesh.position.z += (p.target.z - p.mesh.position.z) * k;
+        p.mesh.position.y = GROUND_Y + BALL_R;
       }
-    }
-    wasMoving = moving;
-
-    // sync meshes
-    for (const p of players) {
-      const b = p.ball;
-      if (b.holed && b.sinkT > 0) {
-        b.sinkT += dt;
-        const k = Math.min(1, b.sinkT / 0.4);
-        p.mesh.position.set(course.cup.x, GROUND_Y + BALL_R - k * 0.5, course.cup.z);
-        p.mesh.scale.setScalar(1 - k * 0.9);
-        if (k >= 1) { p.mesh.visible = false; b.sinkT = 0; }
-      } else {
-        p.mesh.position.set(b.pos.x, GROUND_Y + BALL_R, b.pos.z);
-      }
-      // avatar stands beside own ball, facing the cup
-      const ax = b.pos.x + 0.75, az = b.pos.z - 0.35;
-      p.avatar.position.x = ax; p.avatar.position.z = az;
-      p.avatar.rotation.y = Math.atan2(course.cup.x - ax, course.cup.z - az);
-      animateAvatar(p.avatar, t + players.indexOf(p));
     }
 
     // current-player marker
-    if (state === 'playing' && currentBall() && !currentBall().holed) {
+    const cur = players.get(currentId);
+    if (status === 'playing' && cur && !cur.holed && !cur.inWater) {
       marker.visible = true;
-      marker.position.set(currentBall().pos.x, GROUND_Y + 1.15 + Math.sin(t * 4) * 0.12, currentBall().pos.z);
+      marker.position.set(cur.mesh.position.x, GROUND_Y + 1.15 + Math.sin(t * 4) * 0.12, cur.mesh.position.z);
       marker.rotation.y = t * 2;
     } else marker.visible = false;
 
-    // held-key camera rotation
-    if (keysDown.has('KeyQ') || keysDown.has('ArrowLeft')) targetYaw += dt * 1.8;
-    if (keysDown.has('KeyE') || keysDown.has('ArrowRight')) targetYaw -= dt * 1.8;
-
-    // camera follows current ball (or cup at end), orbiting by camYaw
+    // camera follows the ball of whoever is up (or the cup at the end)
+    const focus = status === 'playing' && cur ? cur.mesh.position : new THREE.Vector3(course.cup.x, 0, course.cup.z);
     camYaw += (targetYaw - camYaw) * (1 - Math.pow(0.005, dt));
-    const focus = state === 'playing' && currentBall() ? currentBall().pos : course.cup;
     camTarget.lerp(new THREE.Vector3(focus.x, 0, focus.z), 1 - Math.pow(0.001, dt));
     const baseOff = aiming ? new THREE.Vector3(0, 8.5, -7.5) : new THREE.Vector3(0, 11, -9.5);
     const cosY = Math.cos(camYaw), sinY = Math.sin(camYaw);
@@ -441,7 +430,6 @@ function animate() {
       -baseOff.x * sinY + baseOff.z * cosY
     );
     camera.position.lerp(new THREE.Vector3(camTarget.x + camOff.x, camOff.y, camTarget.z + camOff.z), 1 - Math.pow(0.002, dt));
-    // look slightly "ahead" of the ball, rotated with the camera
     camera.lookAt(camTarget.x + 1.5 * sinY, 0, camTarget.z + 1.5 * cosY);
   }
 
@@ -453,7 +441,10 @@ function animate() {
     wp.array[i * 3 + 1] = Math.sin(t * 1.4 + x * 0.25 + z * 0.18) * 0.22;
   }
   wp.needsUpdate = true;
-  dynamic.spinnerBar.rotation.y = -course.spinner.angle;
+  if (status !== 'playing' && status !== 'over') {
+    // idle spin before the round starts (server drives it during play)
+    dynamic.spinnerBar.rotation.y = -t * course.spinner.angSpeed;
+  }
   dynamic.flag.rotation.y = Math.sin(t * 2.5) * 0.35;
   for (const c of dynamic.clouds ?? []) {
     c.position.x += dt * 0.5;

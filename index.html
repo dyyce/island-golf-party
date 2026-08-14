@@ -12,28 +12,35 @@
 <body>
   <canvas id="game-canvas"></canvas>
 
-  <!-- ============ SETUP SCREEN ============ -->
+  <!-- ============ LOBBY ============ -->
   <div id="setup-screen" class="screen">
-    <div class="panel setup-panel">
+    <div class="panel setup-panel" id="lobby-entry">
       <h1>⛳ Island Golf Party</h1>
-      <p class="tagline">Couch multiplayer minigolf — one island, one hole, bragging rights.</p>
+      <p class="tagline">Online multiplayer minigolf — one island, one hole, bragging rights.</p>
 
-      <div id="player-list"></div>
+      <label class="name-label">Your name
+        <input id="me-name" maxlength="12" placeholder="Player" />
+      </label>
+      <div class="ae-row"><span>Ball color</span><div id="me-colors" class="swatches"></div></div>
 
       <div class="setup-actions">
-        <button id="add-player-btn" class="btn secondary">+ Add player</button>
-        <button id="quick-start-btn" class="btn primary">Tee off! 🏌️</button>
+        <button id="create-room-btn" class="btn primary">Create room</button>
       </div>
-      <p class="hint">Avatars are optional — quick-start with defaults or tap ✏️ to customize.</p>
+      <div class="join-row">
+        <input id="join-code" maxlength="4" placeholder="CODE" />
+        <button id="join-room-btn" class="btn secondary">Join room</button>
+      </div>
+      <p class="hint" id="lobby-error"></p>
     </div>
 
-    <!-- avatar editor popover (hidden) -->
-    <div id="avatar-editor" class="panel avatar-editor hidden">
-      <h2>Avatar</h2>
-      <label>Name <input id="ae-name" maxlength="12" /></label>
-      <div class="ae-row"><span>Color</span><div id="ae-colors" class="swatches"></div></div>
-      <div class="ae-row"><span>Hat</span><div id="ae-hats" class="swatches"></div></div>
-      <button id="ae-done" class="btn primary">Done</button>
+    <div class="panel setup-panel hidden" id="lobby-room">
+      <h1>Room <span id="room-code" class="code"></span></h1>
+      <p class="tagline">Share the code with your friends — up to 4 players.</p>
+      <div id="player-list"></div>
+      <div class="setup-actions">
+        <button id="start-btn" class="btn primary hidden">Tee off! 🏌️</button>
+        <span id="waiting-host" class="hint hidden">Waiting for the host to start…</span>
+      </div>
     </div>
   </div>
 
@@ -45,8 +52,6 @@
     <div id="hud-buttons">
       <button id="cam-left-btn" class="btn small secondary" title="Rotate camera left (Q)">⟲</button>
       <button id="cam-right-btn" class="btn small secondary" title="Rotate camera right (E)">⟳</button>
-      <button id="restart-btn" class="btn small secondary" title="Restart round">↺</button>
-      <button id="menu-btn" class="btn small secondary" title="Back to menu">☰</button>
     </div>
     <div id="hint-bar">Drag back from the ball to aim, release to shoot · Q/E or right-drag to rotate camera</div>
   </div>
@@ -57,8 +62,8 @@
       <h1 id="winner-title"></h1>
       <table id="scorecard"></table>
       <div class="setup-actions">
-        <button id="play-again-btn" class="btn primary">Play again</button>
-        <button id="end-menu-btn" class="btn secondary">Menu</button>
+        <button id="play-again-btn" class="btn primary hidden">Play again</button>
+        <span id="end-waiting" class="hint hidden">Waiting for the host…</span>
       </div>
     </div>
   </div>
