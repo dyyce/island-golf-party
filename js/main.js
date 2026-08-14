@@ -273,6 +273,7 @@ function canShoot() {
 }
 
 canvas.addEventListener('pointerdown', e => {
+  if (e.button === 2) { orbiting = true; canvas.setPointerCapture(e.pointerId); return; }
   if (!canShoot()) return;
   const g = pointerGround(e);
   if (!g) return;
@@ -282,6 +283,7 @@ canvas.addEventListener('pointerdown', e => {
 });
 
 canvas.addEventListener('pointermove', e => {
+  if (orbiting) { targetYaw -= e.movementX * 0.006; return; }
   if (!aiming) return;
   const g = pointerGround(e);
   if (!g) return;
@@ -295,6 +297,7 @@ canvas.addEventListener('pointermove', e => {
 });
 
 canvas.addEventListener('pointerup', e => {
+  if (orbiting && e.button === 2) { orbiting = false; return; }
   if (!aiming) return;
   aiming = false;
   aimGroup.visible = false;
@@ -330,10 +333,19 @@ function updateAimVisual() {
   });
 }
 
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+addEventListener('keydown', e => {
+  keysDown.add(e.code);
+  if (['ArrowLeft', 'ArrowRight', 'KeyQ', 'KeyE'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => keysDown.delete(e.code));
+
 // ---------- buttons ----------
 $('quick-start-btn').addEventListener('click', startRound);
 $('restart-btn').addEventListener('click', startRound);
 $('play-again-btn').addEventListener('click', startRound);
+$('cam-left-btn').addEventListener('click', () => { targetYaw += Math.PI / 4; });
+$('cam-right-btn').addEventListener('click', () => { targetYaw -= Math.PI / 4; });
 $('menu-btn').addEventListener('click', () => { state = 'menu'; hud.classList.add('hidden'); setupScreen.classList.remove('hidden'); });
 $('end-menu-btn').addEventListener('click', () => { state = 'menu'; endScreen.classList.add('hidden'); setupScreen.classList.remove('hidden'); });
 
@@ -345,6 +357,9 @@ const camTarget = new THREE.Vector3(course.tee.x, 0, course.tee.z);
 let wasMoving = false;
 let pendingTurnAdvance = false;
 let lastBounceSfx = -1;
+let camYaw = 0, targetYaw = 0;
+let orbiting = false;
+const keysDown = new Set();
 
 function animate() {
   requestAnimationFrame(animate);
@@ -411,12 +426,23 @@ function animate() {
       marker.rotation.y = t * 2;
     } else marker.visible = false;
 
-    // camera follows current ball (or cup at end)
+    // held-key camera rotation
+    if (keysDown.has('KeyQ') || keysDown.has('ArrowLeft')) targetYaw += dt * 1.8;
+    if (keysDown.has('KeyE') || keysDown.has('ArrowRight')) targetYaw -= dt * 1.8;
+
+    // camera follows current ball (or cup at end), orbiting by camYaw
+    camYaw += (targetYaw - camYaw) * (1 - Math.pow(0.005, dt));
     const focus = state === 'playing' && currentBall() ? currentBall().pos : course.cup;
     camTarget.lerp(new THREE.Vector3(focus.x, 0, focus.z), 1 - Math.pow(0.001, dt));
-    const camOff = aiming ? new THREE.Vector3(0, 8.5, -7.5) : new THREE.Vector3(0, 11, -9.5);
+    const baseOff = aiming ? new THREE.Vector3(0, 8.5, -7.5) : new THREE.Vector3(0, 11, -9.5);
+    const cosY = Math.cos(camYaw), sinY = Math.sin(camYaw);
+    const camOff = new THREE.Vector3(
+      baseOff.x * cosY + baseOff.z * sinY, baseOff.y,
+      -baseOff.x * sinY + baseOff.z * cosY
+    );
     camera.position.lerp(new THREE.Vector3(camTarget.x + camOff.x, camOff.y, camTarget.z + camOff.z), 1 - Math.pow(0.002, dt));
-    camera.lookAt(camTarget.x, 0, camTarget.z + 1.5);
+    // look slightly "ahead" of the ball, rotated with the camera
+    camera.lookAt(camTarget.x + 1.5 * sinY, 0, camTarget.z + 1.5 * cosY);
   }
 
   // environment motion
