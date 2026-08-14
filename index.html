@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Island Golf Party</title>
+  <link rel="stylesheet" href="./style.css" />
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="game-canvas"></canvas>
+
+  <!-- ============ SETUP SCREEN ============ -->
+  <div id="setup-screen" class="screen">
+    <div class="panel setup-panel">
+      <h1>⛳ Island Golf Party</h1>
+      <p class="tagline">Couch multiplayer minigolf — one island, one hole, bragging rights.</p>
+
+      <div id="player-list"></div>
+
+      <div class="setup-actions">
+        <button id="add-player-btn" class="btn secondary">+ Add player</button>
+        <button id="quick-start-btn" class="btn primary">Tee off! 🏌️</button>
+      </div>
+      <p class="hint">Avatars are optional — quick-start with defaults or tap ✏️ to customize.</p>
+    </div>
+
+    <!-- avatar editor popover (hidden) -->
+    <div id="avatar-editor" class="panel avatar-editor hidden">
+      <h2>Avatar</h2>
+      <label>Name <input id="ae-name" maxlength="12" /></label>
+      <div class="ae-row"><span>Color</span><div id="ae-colors" class="swatches"></div></div>
+      <div class="ae-row"><span>Hat</span><div id="ae-hats" class="swatches"></div></div>
+      <button id="ae-done" class="btn primary">Done</button>
+    </div>
+  </div>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div id="score-chips"></div>
+    <div id="turn-banner"></div>
+    <div id="power-wrap" class="hidden"><div id="power-bar"></div></div>
+    <div id="hud-buttons">
+      <button id="restart-btn" class="btn small secondary" title="Restart round">↺</button>
+      <button id="menu-btn" class="btn small secondary" title="Back to menu">☰</button>
+    </div>
+    <div id="hint-bar">Drag back from the ball to aim, release to shoot</div>
+  </div>
+
+  <!-- ============ END SCREEN ============ -->
+  <div id="end-screen" class="screen hidden">
+    <div class="panel">
+      <h1 id="winner-title"></h1>
+      <table id="scorecard"></table>
+      <div class="setup-actions">
+        <button id="play-again-btn" class="btn primary">Play again</button>
+        <button id="end-menu-btn" class="btn secondary">Menu</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>
